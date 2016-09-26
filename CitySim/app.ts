@@ -1,6 +1,11 @@
 ﻿var tileSize = 5;
 var gridSize = 120;
 
+enum Mode {
+    Walking,
+    Driving
+}
+
 var getGridTile = (coord: number) => {
     return Math.floor(coord / tileSize);
 }
@@ -54,22 +59,22 @@ class Car implements GameObject {
         var start = Date.now();
         var options = [
             { // straight
-                dist: grid.lookAhead(this.x, this.y, this.rotation, 700, 0, this.speed),
+                dist: grid.lookAhead(this.x, this.y, this.rotation, Math.abs(this.speed * 60) + 10, 0, this.speed, Mode.Driving),
                 action: {turn: 0, speed: ""}
             },
             { // back up
-                dist: (grid.lookAhead(this.x, this.y, this.rotation + 180, 50, 0, this.speed) + 5),
+                dist: (grid.lookAhead(this.x, this.y, this.rotation + 180, 50, 0, this.speed, Mode.Driving) + 5),
                 action: { turn: 0, speed: "back" }
             }
         ];
 
         for (var i = 0; i < this.turnRate(); i += .2) {
             options.push({
-                dist: grid.lookAhead(this.x, this.y, this.rotation, 650, i, this.speed),
+                dist: grid.lookAhead(this.x, this.y, this.rotation, Math.abs(this.speed * 60) + 10, i, this.speed, Mode.Driving),
                 action: {turn: i, speed: ""}
             });
             options.push({
-                dist: grid.lookAhead(this.x, this.y, this.rotation, 650, -1 * i, this.speed),
+                dist: grid.lookAhead(this.x, this.y, this.rotation, Math.abs(this.speed * 60) + 10, -1 * i, this.speed, Mode.Driving),
                 action: { turn: -1 * i, speed: "" }
             });
         }
@@ -87,7 +92,7 @@ class Car implements GameObject {
         // take action based on that action
         this.rotation += max.action.turn;
 
-        if (max.dist > (this.speed * 75) && max.action.speed != "back") {
+        if (max.dist > (this.speed * 50) && max.action.speed != "back") {
             this.speed += this.accelRate;
 
             if (this.speed < 0) {
@@ -95,8 +100,8 @@ class Car implements GameObject {
             }
             //console.log("go faster");
         }
-        else if (this.speed >= 0 && max.dist <= (Math.abs(this.speed) * 50)) {
-            this.speed -= this.accelRate;
+        else if (this.speed >= 0 && max.dist <= (Math.abs(this.speed) * 30)) {
+            this.speed -= this.accelRate * 2;
             //console.log("go slower");
         }
 
@@ -229,10 +234,17 @@ class Grid {
         return false;
     }
 
-    isPassable(x: number, y: number): boolean {
+    isPassable(transport: Mode, x: number, y: number): boolean {
         var t = this.getTerrain(x, y);
         if (t != null) {
-            return t.isPassable();
+            switch (transport) {
+                case Mode.Walking:
+                    return t.isWalkwable();
+                case Mode.Driving:
+                    return t.isDriveable();
+                default:
+                    return false;
+            }
         }
 
         return false;
@@ -258,11 +270,12 @@ class Grid {
     }
 
     // return the distance until non-passable terrain. distance is the max distance to look.
-    lookAhead(startX: number, startY: number, direction: number, distance: number, turn: number, speed: number) {
+    lookAhead(startX: number, startY: number, direction: number, distance: number, turn: number, speed: number, transport: Mode) {
         if (speed <= 0) {
             speed = 1;
         }
-        var stepSize = speed / 2;
+        var stepCount = 5;
+        var stepSize = speed / stepCount;
         var currentDistance = 0;
         var currentDirection = direction;
         var currentX = startX;
@@ -270,11 +283,11 @@ class Grid {
 
         while (currentDistance <= distance) {
             currentDirection += turn;
-            for (var i = 0; i < 2; i++) {
+            for (var i = 0; i < stepCount; i++) {
                 currentDistance += stepSize;
                 currentX += stepSize * Math.cos(currentDirection * Math.PI / 180);
                 currentY += stepSize * Math.sin(currentDirection * Math.PI / 180);
-                if (!this.isPassable(getGridTile(currentX), getGridTile(currentY))) {
+                if (!this.isPassable(transport, getGridTile(currentX), getGridTile(currentY))) {
                     return currentDistance;
                 }
             }
@@ -289,22 +302,38 @@ enum TileType {
     Water,
     Mountain,
     Pavement,
-    Building
+    Building,
+    Sidewalk,
+    Parking,
+    Dirt
 }
 
 class Terrain {
     type: TileType;
+    occupant: GameObject; // need some way to check if this is still occupied. IE, a render to grid method to "claim" tiles.
+    // if this spot is already taken,  ?? first they should make the other object update its claimed tiles ??
+    // otherwise they tell the other object they have crashed.
+    // like people and people = set speeds to 0.
+    // people and car = check speed and if high kill/injure person...
+    // car and anything not grass = break car.
 
     constructor(type: TileType) {
         this.type = type;
     }
 
     isBuildable(): boolean {
-        return this.type == TileType.Grass;
+        return true || this.type == TileType.Grass;
     }
 
-    isPassable(): boolean {
-        return this.type == TileType.Pavement;
+    isDriveable(): boolean {
+        return this.type == TileType.Pavement
+            || this.type == TileType.Parking;
+    }
+
+    isWalkwable(): boolean {
+        return this.type == TileType.Pavement
+            || this.type == TileType.Sidewalk
+            || this.type == TileType.Parking;
     }
 }
 
@@ -318,8 +347,9 @@ app.component('game', {
     'User: {{$ctrl.username}} <br/>' +
     'clickType: {{currentType}} <br/>' +
     '<button ng-repeat="type in TileType" ng-click="setBuild(type)">{{type}}</button>' +
+    '<button ng-click="setBuild(\'Car\')">Car</button>' +
     '<br/>'+
-    'Build Size: {{buildSize}} <input type="range" min="1" max="5" ng-model="buildSize"></input><br/>' +
+    'Build Size: {{buildSize}} <input type="range" min="1" max="15" ng-model="buildSize"></input><br/>' +
     '<city ng-repeat="c in $ctrl.cities" c="c"></city>' +
     '</div>',
     controller: "GameController"
@@ -347,9 +377,9 @@ app.component('city', {
         var overlayCtx: CanvasRenderingContext2D = null;
 
         city.gameObjects = [];
-        city.gameObjects.push(new Car(100,100,0,0,.5,2, 10));
-        city.gameObjects.push(new Car(120, 120, 0, 0, .75, 2.5, 12));
-        city.gameObjects.push(new Car(150, 150, 0, 0, 1, 3, 15));
+        //city.gameObjects.push(new Car(100,100,0,0,.5,2, 10));
+        //city.gameObjects.push(new Car(120, 120, 0, 0, .75, 2.5, 12));
+        //city.gameObjects.push(new Car(150, 150, 0, 0, 1, 3, 15));
 
         $scope.runningGame = null;
         $scope.startGame = () => {
@@ -390,8 +420,13 @@ app.component('city', {
                 overlay.onclick = (event: MouseEvent) => {
                     var x = Math.floor(event.layerX / tileSize);
                     var y = Math.floor(event.layerY / tileSize);
-                    city.buildTile(TileType[<string>gameScope.currentType], x, y, gameScope.buildSize);
-                    $scope.redrawTerrain();
+                    if (<string>gameScope.currentType == "Car") {
+                        city.gameObjects.push(new Car(event.layerX, event.layerY, 0, 0, .5, 2, 10));
+                    }
+                    else if (TileType[<string>gameScope.currentType]) {
+                        city.buildTile(TileType[<string>gameScope.currentType], x, y, gameScope.buildSize);
+                        $scope.redrawTerrain();
+                    }
                 }
                 overlay.onmousedown = (event: MouseEvent) => {
                     $scope.mousedown = true;
@@ -402,7 +437,7 @@ app.component('city', {
                     $scope.mousedown = false;
                 }
                 overlay.onmousemove = (event: MouseEvent) => {
-                    if ($scope.mousedown) {
+                    if ($scope.mousedown && <string>gameScope.currentType != "Car") {
                     //console.log("drag");
                     var x = Math.floor(event.layerX / tileSize);
                         var y = Math.floor(event.layerY / tileSize);
@@ -433,7 +468,13 @@ app.component('city', {
                             terrainCtx.fillStyle = "blue";
                             break;
                         case TileType.Building:
+                            terrainCtx.fillStyle = "yellow";
+                            break;
+                        case TileType.Dirt:
                             terrainCtx.fillStyle = "brown";
+                            break;
+                        case TileType.Parking:
+                            terrainCtx.fillStyle = "gray";
                             break;
                         default:
                             terrainCtx.fillStyle = "lightGrey";

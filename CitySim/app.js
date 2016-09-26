@@ -1,5 +1,10 @@
 var tileSize = 5;
 var gridSize = 120;
+var Mode;
+(function (Mode) {
+    Mode[Mode["Walking"] = 0] = "Walking";
+    Mode[Mode["Driving"] = 1] = "Driving";
+})(Mode || (Mode = {}));
 var getGridTile = function (coord) {
     return Math.floor(coord / tileSize);
 };
@@ -28,21 +33,21 @@ var Car = (function () {
         var start = Date.now();
         var options = [
             {
-                dist: grid.lookAhead(this.x, this.y, this.rotation, 700, 0, this.speed),
+                dist: grid.lookAhead(this.x, this.y, this.rotation, Math.abs(this.speed * 60) + 10, 0, this.speed, Mode.Driving),
                 action: { turn: 0, speed: "" }
             },
             {
-                dist: (grid.lookAhead(this.x, this.y, this.rotation + 180, 50, 0, this.speed) + 5),
+                dist: (grid.lookAhead(this.x, this.y, this.rotation + 180, 50, 0, this.speed, Mode.Driving) + 5),
                 action: { turn: 0, speed: "back" }
             }
         ];
         for (var i = 0; i < this.turnRate(); i += .2) {
             options.push({
-                dist: grid.lookAhead(this.x, this.y, this.rotation, 650, i, this.speed),
+                dist: grid.lookAhead(this.x, this.y, this.rotation, Math.abs(this.speed * 60) + 10, i, this.speed, Mode.Driving),
                 action: { turn: i, speed: "" }
             });
             options.push({
-                dist: grid.lookAhead(this.x, this.y, this.rotation, 650, -1 * i, this.speed),
+                dist: grid.lookAhead(this.x, this.y, this.rotation, Math.abs(this.speed * 60) + 10, -1 * i, this.speed, Mode.Driving),
                 action: { turn: -1 * i, speed: "" }
             });
         }
@@ -57,14 +62,14 @@ var Car = (function () {
         }
         // take action based on that action
         this.rotation += max.action.turn;
-        if (max.dist > (this.speed * 75) && max.action.speed != "back") {
+        if (max.dist > (this.speed * 50) && max.action.speed != "back") {
             this.speed += this.accelRate;
             if (this.speed < 0) {
                 this.speed = 1;
             }
         }
-        else if (this.speed >= 0 && max.dist <= (Math.abs(this.speed) * 50)) {
-            this.speed -= this.accelRate;
+        else if (this.speed >= 0 && max.dist <= (Math.abs(this.speed) * 30)) {
+            this.speed -= this.accelRate * 2;
         }
         if (this.speed == 0 && max.action.speed == "back") {
             this.speed = -1;
@@ -167,10 +172,17 @@ var Grid = (function () {
         }
         return false;
     };
-    Grid.prototype.isPassable = function (x, y) {
+    Grid.prototype.isPassable = function (transport, x, y) {
         var t = this.getTerrain(x, y);
         if (t != null) {
-            return t.isPassable();
+            switch (transport) {
+                case Mode.Walking:
+                    return t.isWalkwable();
+                case Mode.Driving:
+                    return t.isDriveable();
+                default:
+                    return false;
+            }
         }
         return false;
     };
@@ -192,22 +204,23 @@ var Grid = (function () {
         return result;
     };
     // return the distance until non-passable terrain. distance is the max distance to look.
-    Grid.prototype.lookAhead = function (startX, startY, direction, distance, turn, speed) {
+    Grid.prototype.lookAhead = function (startX, startY, direction, distance, turn, speed, transport) {
         if (speed <= 0) {
             speed = 1;
         }
-        var stepSize = speed / 2;
+        var stepCount = 5;
+        var stepSize = speed / stepCount;
         var currentDistance = 0;
         var currentDirection = direction;
         var currentX = startX;
         var currentY = startY;
         while (currentDistance <= distance) {
             currentDirection += turn;
-            for (var i = 0; i < 2; i++) {
+            for (var i = 0; i < stepCount; i++) {
                 currentDistance += stepSize;
                 currentX += stepSize * Math.cos(currentDirection * Math.PI / 180);
                 currentY += stepSize * Math.sin(currentDirection * Math.PI / 180);
-                if (!this.isPassable(getGridTile(currentX), getGridTile(currentY))) {
+                if (!this.isPassable(transport, getGridTile(currentX), getGridTile(currentY))) {
                     return currentDistance;
                 }
             }
@@ -223,16 +236,30 @@ var TileType;
     TileType[TileType["Mountain"] = 2] = "Mountain";
     TileType[TileType["Pavement"] = 3] = "Pavement";
     TileType[TileType["Building"] = 4] = "Building";
+    TileType[TileType["Sidewalk"] = 5] = "Sidewalk";
+    TileType[TileType["Parking"] = 6] = "Parking";
+    TileType[TileType["Dirt"] = 7] = "Dirt";
 })(TileType || (TileType = {}));
 var Terrain = (function () {
+    // if this spot is already taken,  ?? first they should make the other object update its claimed tiles ??
+    // otherwise they tell the other object they have crashed.
+    // like people and people = set speeds to 0.
+    // people and car = check speed and if high kill/injure person...
+    // car and anything not grass = break car.
     function Terrain(type) {
         this.type = type;
     }
     Terrain.prototype.isBuildable = function () {
-        return this.type == TileType.Grass;
+        return true || this.type == TileType.Grass;
     };
-    Terrain.prototype.isPassable = function () {
-        return this.type == TileType.Pavement;
+    Terrain.prototype.isDriveable = function () {
+        return this.type == TileType.Pavement
+            || this.type == TileType.Parking;
+    };
+    Terrain.prototype.isWalkwable = function () {
+        return this.type == TileType.Pavement
+            || this.type == TileType.Sidewalk
+            || this.type == TileType.Parking;
     };
     return Terrain;
 })();
@@ -243,8 +270,9 @@ app.component('game', {
         'User: {{$ctrl.username}} <br/>' +
         'clickType: {{currentType}} <br/>' +
         '<button ng-repeat="type in TileType" ng-click="setBuild(type)">{{type}}</button>' +
+        '<button ng-click="setBuild(\'Car\')">Car</button>' +
         '<br/>' +
-        'Build Size: {{buildSize}} <input type="range" min="1" max="5" ng-model="buildSize"></input><br/>' +
+        'Build Size: {{buildSize}} <input type="range" min="1" max="15" ng-model="buildSize"></input><br/>' +
         '<city ng-repeat="c in $ctrl.cities" c="c"></city>' +
         '</div>',
     controller: "GameController"
@@ -269,9 +297,9 @@ app.component('city', {
         var overlay = null;
         var overlayCtx = null;
         city.gameObjects = [];
-        city.gameObjects.push(new Car(100, 100, 0, 0, .5, 2, 10));
-        city.gameObjects.push(new Car(120, 120, 0, 0, .75, 2.5, 12));
-        city.gameObjects.push(new Car(150, 150, 0, 0, 1, 3, 15));
+        //city.gameObjects.push(new Car(100,100,0,0,.5,2, 10));
+        //city.gameObjects.push(new Car(120, 120, 0, 0, .75, 2.5, 12));
+        //city.gameObjects.push(new Car(150, 150, 0, 0, 1, 3, 15));
         $scope.runningGame = null;
         $scope.startGame = function () {
             if ($scope.runningGame == null) {
@@ -307,8 +335,13 @@ app.component('city', {
                 overlay.onclick = function (event) {
                     var x = Math.floor(event.layerX / tileSize);
                     var y = Math.floor(event.layerY / tileSize);
-                    city.buildTile(TileType[gameScope.currentType], x, y, gameScope.buildSize);
-                    $scope.redrawTerrain();
+                    if (gameScope.currentType == "Car") {
+                        city.gameObjects.push(new Car(event.layerX, event.layerY, 0, 0, .5, 2, 10));
+                    }
+                    else if (TileType[gameScope.currentType]) {
+                        city.buildTile(TileType[gameScope.currentType], x, y, gameScope.buildSize);
+                        $scope.redrawTerrain();
+                    }
                 };
                 overlay.onmousedown = function (event) {
                     $scope.mousedown = true;
@@ -319,7 +352,7 @@ app.component('city', {
                     $scope.mousedown = false;
                 };
                 overlay.onmousemove = function (event) {
-                    if ($scope.mousedown) {
+                    if ($scope.mousedown && gameScope.currentType != "Car") {
                         //console.log("drag");
                         var x = Math.floor(event.layerX / tileSize);
                         var y = Math.floor(event.layerY / tileSize);
@@ -348,7 +381,13 @@ app.component('city', {
                             terrainCtx.fillStyle = "blue";
                             break;
                         case TileType.Building:
+                            terrainCtx.fillStyle = "yellow";
+                            break;
+                        case TileType.Dirt:
                             terrainCtx.fillStyle = "brown";
+                            break;
+                        case TileType.Parking:
+                            terrainCtx.fillStyle = "gray";
                             break;
                         default:
                             terrainCtx.fillStyle = "lightGrey";
